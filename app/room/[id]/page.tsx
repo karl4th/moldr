@@ -47,6 +47,7 @@ export default function RoomPage() {
   const [reactionPickerFor, setReactionPickerFor] = useState<string | null>(null)
   // Hover state for messages
   const [hoveredMsg, setHoveredMsg] = useState<string | null>(null)
+  const [typingUsers, setTypingUsers] = useState<string[]>([])
 
   const videoRef = useRef<HTMLVideoElement>(null)
   const channelRef = useRef<RealtimeChannel | null>(null)
@@ -54,6 +55,7 @@ export default function RoomPage() {
   const didSync = useRef(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const typingTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Load username
   useEffect(() => {
@@ -118,6 +120,15 @@ export default function RoomPage() {
       if (egg) setEasterEgg(egg)
     })
 
+    // Typing indicator
+    ch.on('broadcast', { event: 'typing' }, ({ payload }) => {
+      setTypingUsers(prev =>
+        payload.typing
+          ? prev.includes(payload.username) ? prev : [...prev, payload.username]
+          : prev.filter((u: string) => u !== payload.username)
+      )
+    })
+
     // Reactions
     ch.on('broadcast', { event: 'reaction' }, ({ payload }) => {
       applyReaction(payload.messageId, payload.emoji, payload.username)
@@ -177,8 +188,22 @@ export default function RoomPage() {
     channelRef.current?.send({ type: 'broadcast', event: 'chat', payload: msg })
     setMessages(prev => [...prev, msg])
     setChatText('')
+    stopTyping()
     const egg = detectEasterEgg(trimmed)
     if (egg) setEasterEgg(egg)
+  }
+
+  const stopTyping = () => {
+    if (typingTimeout.current) clearTimeout(typingTimeout.current)
+    channelRef.current?.send({ type: 'broadcast', event: 'typing', payload: { username, typing: false } })
+  }
+
+  const handleChatInput = (value: string) => {
+    setChatText(value)
+    if (!channelRef.current || !username) return
+    channelRef.current.send({ type: 'broadcast', event: 'typing', payload: { username, typing: true } })
+    if (typingTimeout.current) clearTimeout(typingTimeout.current)
+    typingTimeout.current = setTimeout(stopTyping, 2000)
   }
 
   const insertEmoji = (emoji: string) => {
@@ -360,6 +385,22 @@ export default function RoomPage() {
             <div ref={bottomRef} />
           </div>
 
+          {/* Typing indicator */}
+          <div className="h-6 shrink-0 flex items-center px-4">
+            {typingUsers.length > 0 && (
+              <span className="text-zinc-600 text-xs flex items-center gap-1.5">
+                <span className="flex gap-0.5">
+                  <span className="typing-dot" />
+                  <span className="typing-dot" style={{ animationDelay: '0.15s' }} />
+                  <span className="typing-dot" style={{ animationDelay: '0.3s' }} />
+                </span>
+                {typingUsers.length === 1
+                  ? `${typingUsers[0]} печатает`
+                  : `${typingUsers.slice(0, 2).join(' и ')} печатают`}
+              </span>
+            )}
+          </div>
+
           {/* Input area */}
           <div className="shrink-0 border-t border-white/[0.06] p-3">
             <div className="relative">
@@ -379,7 +420,7 @@ export default function RoomPage() {
                 <input
                   ref={inputRef}
                   value={chatText}
-                  onChange={e => setChatText(e.target.value)}
+                  onChange={e => handleChatInput(e.target.value)}
                   onKeyDown={e => { if (e.key === 'Enter') sendMessage() }}
                   placeholder="Сообщение..."
                   className="flex-1 bg-transparent text-sm text-white placeholder:text-zinc-700 outline-none"

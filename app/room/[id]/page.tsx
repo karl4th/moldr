@@ -9,7 +9,7 @@ import { EasterEgg, detectEasterEgg } from './easter-egg'
 import { EmojiPicker, ReactionPicker } from './emoji-picker'
 
 const MOVIE_URL =
-  'https://pulse.host.cinemap.cc/c3f4c1ea1d2ecb43cca9ac9805d71849:2026040216/movies/9862e8fbdffb2f85b551de3c31ee31bd9500a062/720.mp4'
+  'https://elvis.host.cinemap.cc/f7682b8342c90e4049ac06a92bcdd929:2026040218/movies/cac92315e2bace393903df4208753576818eca10/1080.mp4'
 
 interface Message {
   id: string

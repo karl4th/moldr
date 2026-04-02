@@ -1,65 +1,103 @@
-import Image from "next/image";
+'use client'
+
+import { useState } from 'react'
+import { useRouter } from 'next/navigation'
+import { FilmSlate } from '@phosphor-icons/react'
+
+function genId() {
+  return Math.random().toString(36).slice(2, 8).toUpperCase()
+}
 
 export default function Home() {
+  const router = useRouter()
+  const [name, setName] = useState('')
+  const [code, setCode] = useState('')
+  const [mode, setMode] = useState<'create' | 'join'>('create')
+
+  const enter = () => {
+    const trimName = name.trim()
+    const roomId = mode === 'create' ? genId() : code.trim().toUpperCase()
+    if (!trimName || !roomId) return
+    localStorage.setItem('moldir_username', trimName)
+    router.push(`/room/${roomId}`)
+  }
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+    <div className="flex min-h-screen flex-col items-center justify-center bg-[#080808] px-4">
+      <div className="flex flex-col items-center gap-10 w-full max-w-[380px]">
+
+        {/* Logo */}
+        <div className="flex flex-col items-center gap-3">
+          <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-white/[0.06] border border-white/[0.08]">
+            <FilmSlate size={22} weight="fill" className="text-white" />
+          </div>
+          <div className="text-center">
+            <h1 className="text-white text-2xl font-semibold tracking-tight">moldir</h1>
+            <p className="text-zinc-600 text-sm mt-0.5">Смотри фильмы вместе с друзьями</p>
+          </div>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
+
+        {/* Card */}
+        <div className="w-full rounded-2xl border border-white/[0.07] bg-[#111] p-6 flex flex-col gap-4">
+
+          {/* Name */}
+          <div className="flex flex-col gap-1.5">
+            <label className="text-zinc-500 text-xs">Твоё имя</label>
+            <input
+              autoFocus
+              value={name}
+              onChange={e => setName(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') enter() }}
+              placeholder="Введи имя..."
+              className="w-full rounded-xl bg-white/[0.05] border border-white/[0.07] px-4 py-3 text-white placeholder:text-zinc-700 text-sm outline-none focus:border-white/[0.18] transition-colors"
             />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+          </div>
+
+          {/* Mode toggle */}
+          <div className="flex rounded-xl bg-white/[0.04] p-1 gap-1">
+            {(['create', 'join'] as const).map(m => (
+              <button
+                key={m}
+                onClick={() => setMode(m)}
+                className={`flex-1 rounded-[10px] py-2 text-xs font-medium transition-all cursor-pointer select-none ${
+                  mode === m
+                    ? 'bg-white text-black shadow-sm'
+                    : 'text-zinc-600 hover:text-zinc-400'
+                }`}
+              >
+                {m === 'create' ? 'Создать комнату' : 'Войти по коду'}
+              </button>
+            ))}
+          </div>
+
+          {/* Room code input */}
+          {mode === 'join' && (
+            <div className="flex flex-col gap-1.5">
+              <label className="text-zinc-500 text-xs">Код комнаты</label>
+              <input
+                value={code}
+                onChange={e => setCode(e.target.value.toUpperCase())}
+                onKeyDown={e => { if (e.key === 'Enter') enter() }}
+                placeholder="Напр. A3BC9D"
+                maxLength={6}
+                className="w-full rounded-xl bg-white/[0.05] border border-white/[0.07] px-4 py-3 text-white placeholder:text-zinc-700 text-sm outline-none focus:border-white/[0.18] transition-colors tracking-[0.2em] font-mono uppercase"
+              />
+            </div>
+          )}
+
+          <button
+            disabled={!name.trim() || (mode === 'join' && code.trim().length < 4)}
+            onClick={enter}
+            className="w-full rounded-xl bg-white py-3 text-sm font-semibold text-black transition-opacity disabled:opacity-20 hover:opacity-90 cursor-pointer disabled:cursor-default mt-1"
           >
-            Documentation
-          </a>
+            {mode === 'create' ? 'Создать и войти' : 'Войти в комнату'}
+          </button>
         </div>
-      </main>
+
+        <p className="text-zinc-700 text-xs text-center">
+          moldir.space — синхронный просмотр
+        </p>
+      </div>
     </div>
-  );
+  )
 }

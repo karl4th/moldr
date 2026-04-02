@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { RealtimeChannel } from '@supabase/supabase-js'
 import { supabase } from '@/lib/supabase'
@@ -11,6 +11,7 @@ import {
   CopySimple,
   Check,
 } from '@phosphor-icons/react'
+import { EasterEgg, detectEasterEgg } from './easter-egg'
 
 const MOVIE_URL =
   'https://pulse.host.cinemap.cc/c3f4c1ea1d2ecb43cca9ac9805d71849:2026040216/movies/9862e8fbdffb2f85b551de3c31ee31bd9500a062/720.mp4'
@@ -38,6 +39,7 @@ export default function RoomPage() {
   const [online, setOnline] = useState(0)
   const [copied, setCopied] = useState(false)
   const [connected, setConnected] = useState(false)
+  const [easterEgg, setEasterEgg] = useState<ReturnType<typeof detectEasterEgg>>(null)
 
   const videoRef = useRef<HTMLVideoElement>(null)
   const channelRef = useRef<RealtimeChannel | null>(null)
@@ -124,6 +126,8 @@ export default function RoomPage() {
     // ── Chat ─────────────────────────────────────────────────────────────────
     ch.on('broadcast', { event: 'chat' }, ({ payload }) => {
       setMessages(prev => [...prev, payload as Message])
+      const egg = detectEasterEgg((payload as Message).text)
+      if (egg) setEasterEgg(egg)
     })
 
     // ── Presence: track online users ─────────────────────────────────────────
@@ -180,6 +184,8 @@ export default function RoomPage() {
     channelRef.current?.send({ type: 'broadcast', event: 'chat', payload: msg })
     setMessages(prev => [...prev, msg])
     setChatText('')
+    const egg = detectEasterEgg(trimmed)
+    if (egg) setEasterEgg(egg)
   }
 
   const copyInvite = () => {
@@ -233,6 +239,7 @@ export default function RoomPage() {
   // ── Main room ─────────────────────────────────────────────────────────────
   return (
     <div className="flex h-screen flex-col bg-[#080808] overflow-hidden">
+      <EasterEgg trigger={easterEgg} onDone={() => setEasterEgg(null)} />
 
       {/* Header */}
       <header className="flex h-11 shrink-0 items-center justify-between border-b border-white/[0.06] px-4">

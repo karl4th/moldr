@@ -1,17 +1,12 @@
 'use client'
 
-import { useEffect, useRef, useState, useCallback } from 'react'
-import { useParams, useRouter } from 'next/navigation'
+import { useEffect, useRef, useState } from 'react'
+import { useParams } from 'next/navigation'
 import { RealtimeChannel } from '@supabase/supabase-js'
 import { supabase } from '@/lib/supabase'
-import {
-  FilmSlate,
-  PaperPlaneTilt,
-  Users,
-  CopySimple,
-  Check,
-} from '@phosphor-icons/react'
+import { FilmSlate, PaperPlaneTilt, Users, CopySimple, Check, Smiley } from '@phosphor-icons/react'
 import { EasterEgg, detectEasterEgg } from './easter-egg'
+import { EmojiPicker, ReactionPicker } from './emoji-picker'
 
 const MOVIE_URL =
   'https://pulse.host.cinemap.cc/c3f4c1ea1d2ecb43cca9ac9805d71849:2026040216/movies/9862e8fbdffb2f85b551de3c31ee31bd9500a062/720.mp4'
@@ -23,6 +18,9 @@ interface Message {
   time: string
 }
 
+// reactionMap[messageId][emoji] = [username, ...]
+type ReactionMap = Record<string, Record<string, string[]>>
+
 function ts() {
   const d = new Date()
   return `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`
@@ -30,7 +28,6 @@ function ts() {
 
 export default function RoomPage() {
   const { id: roomId } = useParams<{ id: string }>()
-  const router = useRouter()
 
   const [username, setUsername] = useState<string | null>(null)
   const [nameInput, setNameInput] = useState('')
@@ -41,26 +38,35 @@ export default function RoomPage() {
   const [connected, setConnected] = useState(false)
   const [easterEgg, setEasterEgg] = useState<ReturnType<typeof detectEasterEgg>>(null)
 
+  // Emoji picker
+  const [emojiOpen, setEmojiOpen] = useState(false)
+
+  // Reactions: messageId → emoji → usernames[]
+  const [reactionMap, setReactionMap] = useState<ReactionMap>({})
+  // Which message's reaction picker is open
+  const [reactionPickerFor, setReactionPickerFor] = useState<string | null>(null)
+  // Hover state for messages
+  const [hoveredMsg, setHoveredMsg] = useState<string | null>(null)
+
   const videoRef = useRef<HTMLVideoElement>(null)
   const channelRef = useRef<RealtimeChannel | null>(null)
-  // Prevents re-broadcasting events triggered by remote sync
   const syncLock = useRef(false)
-  // Ensures we only apply the first sync_res we receive
   const didSync = useRef(false)
+  const inputRef = useRef<HTMLInputElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
 
-  // Load username on mount
+  // Load username
   useEffect(() => {
-    const saved = localStorage.getItem('moldir_username')
+    const saved = localStorage.getItem('moldr_username')
     if (saved) setUsername(saved)
   }, [])
 
-  // Auto-scroll chat to bottom
+  // Auto-scroll
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
-  // Connect to Supabase Realtime when username is ready
+  // Supabase Realtime
   useEffect(() => {
     if (!username || !roomId) return
 
@@ -69,123 +75,116 @@ export default function RoomPage() {
     })
     channelRef.current = ch
 
-    // ── Video sync ───────────────────────────────────────────────────────────
+    // Video sync
     ch.on('broadcast', { event: 'video' }, ({ payload }) => {
       const v = videoRef.current
       if (!v) return
-
       syncLock.current = true
-
       const apply = async () => {
         try {
-          if (payload.action === 'seek' || payload.action === 'play') {
-            v.currentTime = payload.time
-          }
+          if (payload.action === 'seek' || payload.action === 'play') v.currentTime = payload.time
           if (payload.action === 'play') await v.play()
           else if (payload.action === 'pause') v.pause()
-        } catch {
-          // Autoplay blocked — user needs to interact first
-        } finally {
-          setTimeout(() => { syncLock.current = false }, 200)
-        }
+        } catch { /* autoplay blocked */ }
+        finally { setTimeout(() => { syncLock.current = false }, 200) }
       }
       apply()
     })
 
-    // ── Sync request: someone joined and wants current state ─────────────────
     ch.on('broadcast', { event: 'sync_req' }, () => {
       const v = videoRef.current
       if (!v) return
-      ch.send({
-        type: 'broadcast',
-        event: 'sync_res',
-        payload: { time: v.currentTime, paused: v.paused },
-      })
+      ch.send({ type: 'broadcast', event: 'sync_res', payload: { time: v.currentTime, paused: v.paused } })
     })
 
-    // ── Sync response: we just joined, apply state ───────────────────────────
     ch.on('broadcast', { event: 'sync_res' }, ({ payload }) => {
       if (didSync.current) return
       didSync.current = true
-
       const v = videoRef.current
       if (!v) return
-
       syncLock.current = true
       v.currentTime = payload.time
-
       if (!payload.paused) {
-        v.play()
-          .catch(() => {})
-          .finally(() => { setTimeout(() => { syncLock.current = false }, 200) })
+        v.play().catch(() => {}).finally(() => { setTimeout(() => { syncLock.current = false }, 200) })
       } else {
         setTimeout(() => { syncLock.current = false }, 200)
       }
     })
 
-    // ── Chat ─────────────────────────────────────────────────────────────────
+    // Chat
     ch.on('broadcast', { event: 'chat' }, ({ payload }) => {
       setMessages(prev => [...prev, payload as Message])
       const egg = detectEasterEgg((payload as Message).text)
       if (egg) setEasterEgg(egg)
     })
 
-    // ── Presence: track online users ─────────────────────────────────────────
-    ch.on('presence', { event: 'sync' }, () => {
-      setOnline(Object.keys(ch.presenceState()).length)
+    // Reactions
+    ch.on('broadcast', { event: 'reaction' }, ({ payload }) => {
+      applyReaction(payload.messageId, payload.emoji, payload.username)
     })
-    ch.on('presence', { event: 'join' }, () => {
-      setOnline(Object.keys(ch.presenceState()).length)
-    })
-    ch.on('presence', { event: 'leave' }, () => {
-      setOnline(Object.keys(ch.presenceState()).length)
-    })
+
+    // Presence
+    ch.on('presence', { event: 'sync' }, () => setOnline(Object.keys(ch.presenceState()).length))
+    ch.on('presence', { event: 'join' }, () => setOnline(Object.keys(ch.presenceState()).length))
+    ch.on('presence', { event: 'leave' }, () => setOnline(Object.keys(ch.presenceState()).length))
 
     ch.subscribe(async (status) => {
       if (status !== 'SUBSCRIBED') return
-
       setConnected(true)
-
       await ch.track({ username, at: Date.now() })
-
-      // Ask others for current video state
       ch.send({ type: 'broadcast', event: 'sync_req', payload: {} })
-
-      // If alone in room after 2s, no sync needed
       setTimeout(() => { didSync.current = true }, 2000)
     })
 
-    return () => {
-      supabase.removeChannel(ch)
-    }
+    return () => { supabase.removeChannel(ch) }
   }, [username, roomId])
 
-  // ── Broadcast local video actions ────────────────────────────────────────
+  const applyReaction = (messageId: string, emoji: string, user: string) => {
+    setReactionMap(prev => {
+      const msgR = { ...(prev[messageId] || {}) }
+      const users = [...(msgR[emoji] || [])]
+      const idx = users.indexOf(user)
+      if (idx >= 0) users.splice(idx, 1)
+      else users.push(user)
+      if (users.length === 0) delete msgR[emoji]
+      else msgR[emoji] = users
+      return { ...prev, [messageId]: msgR }
+    })
+  }
+
+  const handleReaction = (messageId: string, emoji: string) => {
+    if (!username) return
+    applyReaction(messageId, emoji, username)
+    channelRef.current?.send({
+      type: 'broadcast',
+      event: 'reaction',
+      payload: { messageId, emoji, username },
+    })
+    setReactionPickerFor(null)
+  }
+
   const broadcastVideo = (action: 'play' | 'pause' | 'seek') => {
     if (syncLock.current) return
     const v = videoRef.current
     if (!v) return
-    channelRef.current?.send({
-      type: 'broadcast',
-      event: 'video',
-      payload: { action, time: v.currentTime },
-    })
+    channelRef.current?.send({ type: 'broadcast', event: 'video', payload: { action, time: v.currentTime } })
   }
 
   const sendMessage = () => {
     const trimmed = chatText.trim()
     if (!trimmed || !username) return
-    const msg: Message = {
-      id: crypto.randomUUID(),
-      user: username,
-      text: trimmed,
-      time: ts(),
-    }
+    const msg: Message = { id: crypto.randomUUID(), user: username, text: trimmed, time: ts() }
     channelRef.current?.send({ type: 'broadcast', event: 'chat', payload: msg })
     setMessages(prev => [...prev, msg])
     setChatText('')
     const egg = detectEasterEgg(trimmed)
     if (egg) setEasterEgg(egg)
+  }
+
+  const insertEmoji = (emoji: string) => {
+    setChatText(prev => prev + emoji)
+    setEmojiOpen(false)
+    inputRef.current?.focus()
   }
 
   const copyInvite = () => {
@@ -194,14 +193,14 @@ export default function RoomPage() {
     setTimeout(() => setCopied(false), 2500)
   }
 
-  const setName = () => {
+  const joinWithName = () => {
     const t = nameInput.trim()
     if (!t) return
-    localStorage.setItem('moldir_username', t)
+    localStorage.setItem('moldr_username', t)
     setUsername(t)
   }
 
-  // ── Name gate ────────────────────────────────────────────────────────────
+  // ── Name gate ─────────────────────────────────────────────────────────────
   if (!username) {
     return (
       <div className="flex min-h-screen flex-col items-center justify-center bg-[#080808] px-4">
@@ -219,13 +218,13 @@ export default function RoomPage() {
               autoFocus
               value={nameInput}
               onChange={e => setNameInput(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter') setName() }}
+              onKeyDown={e => { if (e.key === 'Enter') joinWithName() }}
               placeholder="Введи имя..."
               className="w-full rounded-xl bg-white/[0.05] border border-white/[0.07] px-4 py-3 text-white placeholder:text-zinc-700 text-sm outline-none focus:border-white/[0.18] transition-colors"
             />
             <button
               disabled={!nameInput.trim()}
-              onClick={setName}
+              onClick={joinWithName}
               className="w-full rounded-xl bg-white py-3 text-sm font-semibold text-black transition-opacity disabled:opacity-20 hover:opacity-90 cursor-pointer disabled:cursor-default"
             >
               Войти в комнату
@@ -236,7 +235,7 @@ export default function RoomPage() {
     )
   }
 
-  // ── Main room ─────────────────────────────────────────────────────────────
+  // ── Main room ──────────────────────────────────────────────────────────────
   return (
     <div className="flex h-screen flex-col bg-[#080808] overflow-hidden">
       <EasterEgg trigger={easterEgg} onDone={() => setEasterEgg(null)} />
@@ -248,35 +247,14 @@ export default function RoomPage() {
           <span className="text-white text-sm font-semibold tracking-tight">moldir</span>
           <span className="text-zinc-700 text-xs font-mono ml-1">{roomId}</span>
         </div>
-
         <div className="flex items-center gap-4">
-          {/* Online indicator */}
           <div className="flex items-center gap-1.5">
-            <span
-              className={`h-1.5 w-1.5 rounded-full transition-colors ${
-                connected ? 'bg-emerald-500' : 'bg-zinc-700'
-              }`}
-            />
+            <span className={`h-1.5 w-1.5 rounded-full transition-colors ${connected ? 'bg-emerald-500' : 'bg-zinc-700'}`} />
             <Users size={12} className="text-zinc-600" />
             <span className="text-zinc-600 text-xs tabular-nums">{online}</span>
           </div>
-
-          {/* Copy invite */}
-          <button
-            onClick={copyInvite}
-            className="flex items-center gap-1.5 text-zinc-500 hover:text-white text-xs transition-colors cursor-pointer select-none"
-          >
-            {copied ? (
-              <>
-                <Check size={13} className="text-emerald-400" />
-                <span className="text-emerald-400">Скопировано</span>
-              </>
-            ) : (
-              <>
-                <CopySimple size={13} />
-                <span>Пригласить</span>
-              </>
-            )}
+          <button onClick={copyInvite} className="flex items-center gap-1.5 text-zinc-500 hover:text-white text-xs transition-colors cursor-pointer select-none">
+            {copied ? <><Check size={13} className="text-emerald-400" /><span className="text-emerald-400">Скопировано</span></> : <><CopySimple size={13} /><span>Пригласить</span></>}
           </button>
         </div>
       </header>
@@ -300,52 +278,120 @@ export default function RoomPage() {
         {/* Chat */}
         <aside className="flex w-[300px] shrink-0 flex-col border-l border-white/[0.06] bg-[#0d0d0d]">
 
-          {/* Chat header */}
           <div className="flex h-10 shrink-0 items-center border-b border-white/[0.06] px-4">
             <span className="text-zinc-600 text-[10px] font-medium uppercase tracking-[0.12em]">Чат</span>
           </div>
 
           {/* Messages */}
-          <div className="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-4 scrollbar-thin">
+          <div
+            className="flex-1 overflow-y-auto px-3 py-4 flex flex-col gap-3 scrollbar-thin"
+            onClick={() => { setReactionPickerFor(null); setEmojiOpen(false) }}
+          >
             {messages.length === 0 && (
-              <p className="text-zinc-800 text-xs text-center mt-12 leading-5">
-                Пока тихо.<br />Напиши первым!
-              </p>
+              <p className="text-zinc-800 text-xs text-center mt-12 leading-5">Пока тихо.<br />Напиши первым!</p>
             )}
             {messages.map(msg => {
               const isMe = msg.user === username
+              const reactions = reactionMap[msg.id] || {}
+              const hasReactions = Object.keys(reactions).length > 0
+              const isHovered = hoveredMsg === msg.id
+
               return (
-                <div key={msg.id} className="flex flex-col gap-0.5">
+                <div
+                  key={msg.id}
+                  className="relative group flex flex-col gap-0.5"
+                  onMouseEnter={() => setHoveredMsg(msg.id)}
+                  onMouseLeave={() => { setHoveredMsg(null) }}
+                >
+                  {/* Name + time */}
                   <div className="flex items-baseline gap-1.5">
                     <span className={`text-[11px] font-semibold ${isMe ? 'text-white' : 'text-zinc-400'}`}>
                       {isMe ? 'Ты' : msg.user}
                     </span>
                     <span className="text-zinc-700 text-[10px]">{msg.time}</span>
                   </div>
-                  <p className="text-zinc-300 text-sm leading-relaxed break-words">{msg.text}</p>
+
+                  {/* Text */}
+                  <p className="text-zinc-300 text-sm leading-relaxed break-words pr-5">{msg.text}</p>
+
+                  {/* Reaction add button — absolute top-right, shows on hover */}
+                  {(isHovered || reactionPickerFor === msg.id) && (
+                    <button
+                      onClick={e => { e.stopPropagation(); setReactionPickerFor(reactionPickerFor === msg.id ? null : msg.id) }}
+                      className="absolute top-0 right-0 flex h-5 w-5 items-center justify-center rounded-md text-zinc-600 hover:text-white hover:bg-white/[0.08] transition-colors cursor-pointer text-xs"
+                    >
+                      +
+                    </button>
+                  )}
+
+                  {/* Reaction picker — anchored to left of message, no overflow */}
+                  {reactionPickerFor === msg.id && (
+                    <ReactionPicker
+                      onSelect={emoji => handleReaction(msg.id, emoji)}
+                      onClose={() => setReactionPickerFor(null)}
+                    />
+                  )}
+
+                  {/* Reaction pills */}
+                  {hasReactions && (
+                    <div className="flex flex-wrap gap-1 mt-1">
+                      {Object.entries(reactions).map(([emoji, users]) => {
+                        const iReacted = username ? users.includes(username) : false
+                        return (
+                          <button
+                            key={emoji}
+                            onClick={e => { e.stopPropagation(); handleReaction(msg.id, emoji) }}
+                            className={`flex items-center gap-1 rounded-full px-2 py-0.5 text-xs border transition-all cursor-pointer select-none ${
+                              iReacted
+                                ? 'bg-white/[0.1] border-white/[0.2] text-white'
+                                : 'bg-white/[0.03] border-white/[0.07] text-zinc-400 hover:border-white/[0.15]'
+                            }`}
+                          >
+                            <span>{emoji}</span>
+                            <span className="tabular-nums">{users.length}</span>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  )}
                 </div>
               )
             })}
             <div ref={bottomRef} />
           </div>
 
-          {/* Input */}
+          {/* Input area */}
           <div className="shrink-0 border-t border-white/[0.06] p-3">
-            <div className="flex items-center gap-2 rounded-xl bg-white/[0.04] border border-white/[0.06] px-3 py-2.5 focus-within:border-white/[0.14] transition-colors">
-              <input
-                value={chatText}
-                onChange={e => setChatText(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter') sendMessage() }}
-                placeholder="Сообщение..."
-                className="flex-1 bg-transparent text-sm text-white placeholder:text-zinc-700 outline-none"
-              />
-              <button
-                onClick={sendMessage}
-                disabled={!chatText.trim()}
-                className="text-zinc-600 hover:text-white disabled:opacity-20 transition-colors cursor-pointer disabled:cursor-default"
-              >
-                <PaperPlaneTilt size={15} weight="fill" />
-              </button>
+            <div className="relative">
+              {emojiOpen && (
+                <EmojiPicker
+                  onSelect={insertEmoji}
+                  onClose={() => setEmojiOpen(false)}
+                />
+              )}
+              <div className="flex items-center gap-1.5 rounded-xl bg-white/[0.04] border border-white/[0.06] px-2.5 py-2 focus-within:border-white/[0.14] transition-colors">
+                <button
+                  onClick={() => setEmojiOpen(o => !o)}
+                  className={`shrink-0 transition-colors cursor-pointer ${emojiOpen ? 'text-white' : 'text-zinc-600 hover:text-zinc-400'}`}
+                >
+                  <Smiley size={16} />
+                </button>
+                <input
+                  ref={inputRef}
+                  value={chatText}
+                  onChange={e => setChatText(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') sendMessage() }}
+                  placeholder="Сообщение..."
+                  className="flex-1 bg-transparent text-sm text-white placeholder:text-zinc-700 outline-none"
+                />
+                <button
+                  onClick={sendMessage}
+                  disabled={!chatText.trim()}
+                  className="shrink-0 text-zinc-600 hover:text-white disabled:opacity-20 transition-colors cursor-pointer disabled:cursor-default"
+                >
+                  <PaperPlaneTilt size={15} weight="fill" />
+                </button>
+              </div>
             </div>
           </div>
 

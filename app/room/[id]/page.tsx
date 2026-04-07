@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { RealtimeChannel } from '@supabase/supabase-js'
 import { supabase } from '@/lib/supabase'
-import { FilmSlate, PaperPlaneTilt, Users, CopySimple, Check, Smiley, ArrowLeft } from '@phosphor-icons/react'
+import { FilmSlate, PaperPlaneTilt, Users, CopySimple, Check, Smiley, ArrowLeft, SignOut } from '@phosphor-icons/react'
 import { EasterEgg, detectEasterEgg } from './easter-egg'
 import { EmojiPicker, ReactionPicker } from './emoji-picker'
 
@@ -259,6 +259,16 @@ export default function RoomPage() {
     setTimeout(() => setCopied(false), 2500)
   }
 
+  const leaveRoom = async () => {
+    if (channelRef.current) {
+      stopTyping()
+      await supabase.removeChannel(channelRef.current)
+      channelRef.current = null
+    }
+    localStorage.removeItem(`moldir_room_${roomId}`)
+    router.push('/')
+  }
+
   const joinWithName = () => {
     const t = nameInput.trim()
     if (!t) return
@@ -359,6 +369,13 @@ export default function RoomPage() {
             {copied
               ? <><Check size={13} className="text-emerald-400" /><span className="text-emerald-400">Скопировано</span></>
               : <><CopySimple size={13} /><span>Пригласить</span></>}
+          </button>
+          <button
+            onClick={leaveRoom}
+            className="flex items-center gap-1.5 text-zinc-600 hover:text-red-400 text-xs transition-colors cursor-pointer select-none"
+          >
+            <SignOut size={13} />
+            <span>Выйти</span>
           </button>
         </div>
       </header>

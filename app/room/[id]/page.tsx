@@ -9,7 +9,7 @@ import { EasterEgg, detectEasterEgg } from './easter-egg'
 import { EmojiPicker, ReactionPicker } from './emoji-picker'
 
 const MOVIE_URL =
-  'https://nova.host.cinemap.cc/a01df0156ae4ddc375ac641a90b02440:2026040619/movies/66fedd4bd0d2aa3f6bd60825b8a9bd82be5041f8/720.mp4'
+  'https://video.moldir.space/video'
 
 interface Message {
   id: string

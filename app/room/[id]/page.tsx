@@ -1,15 +1,12 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { useParams } from 'next/navigation'
+import { useParams, useRouter } from 'next/navigation'
 import { RealtimeChannel } from '@supabase/supabase-js'
 import { supabase } from '@/lib/supabase'
-import { FilmSlate, PaperPlaneTilt, Users, CopySimple, Check, Smiley } from '@phosphor-icons/react'
+import { FilmSlate, PaperPlaneTilt, Users, CopySimple, Check, Smiley, ArrowLeft } from '@phosphor-icons/react'
 import { EasterEgg, detectEasterEgg } from './easter-egg'
 import { EmojiPicker, ReactionPicker } from './emoji-picker'
-
-const MOVIE_URL =
-  'https://video.moldir.space/video'
 
 interface Message {
   id: string
@@ -18,7 +15,6 @@ interface Message {
   time: string
 }
 
-// reactionMap[messageId][emoji] = [username, ...]
 type ReactionMap = Record<string, Record<string, string[]>>
 
 function ts() {
@@ -28,24 +24,21 @@ function ts() {
 
 export default function RoomPage() {
   const { id: roomId } = useParams<{ id: string }>()
+  const router = useRouter()
 
   const [username, setUsername] = useState<string | null>(null)
   const [nameInput, setNameInput] = useState('')
+  const [movieUrl, setMovieUrl] = useState<string | null>(null)
+  const [roomNotFound, setRoomNotFound] = useState(false)
   const [messages, setMessages] = useState<Message[]>([])
   const [chatText, setChatText] = useState('')
   const [online, setOnline] = useState(0)
   const [copied, setCopied] = useState(false)
   const [connected, setConnected] = useState(false)
   const [easterEgg, setEasterEgg] = useState<ReturnType<typeof detectEasterEgg>>(null)
-
-  // Emoji picker
   const [emojiOpen, setEmojiOpen] = useState(false)
-
-  // Reactions: messageId → emoji → usernames[]
   const [reactionMap, setReactionMap] = useState<ReactionMap>({})
-  // Which message's reaction picker is open
   const [reactionPickerFor, setReactionPickerFor] = useState<string | null>(null)
-  // Hover state for messages
   const [hoveredMsg, setHoveredMsg] = useState<string | null>(null)
   const [typingUsers, setTypingUsers] = useState<string[]>([])
 
@@ -53,15 +46,28 @@ export default function RoomPage() {
   const channelRef = useRef<RealtimeChannel | null>(null)
   const syncLock = useRef(false)
   const didSync = useRef(false)
+  const movieUrlRef = useRef<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const typingTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // Load username
+  // Keep ref in sync with state
+  useEffect(() => { movieUrlRef.current = movieUrl }, [movieUrl])
+
+  // Load username + movie URL from localStorage
   useEffect(() => {
     const saved = localStorage.getItem('moldr_username')
     if (saved) setUsername(saved)
-  }, [])
+
+    const roomData = localStorage.getItem(`moldir_room_${roomId}`)
+    if (roomData) {
+      try {
+        const { movieUrl: url } = JSON.parse(roomData)
+        movieUrlRef.current = url
+        setMovieUrl(url)
+      } catch { /* ignore */ }
+    }
+  }, [roomId])
 
   // Auto-scroll
   useEffect(() => {
@@ -96,10 +102,19 @@ export default function RoomPage() {
     ch.on('broadcast', { event: 'sync_req' }, () => {
       const v = videoRef.current
       if (!v) return
-      ch.send({ type: 'broadcast', event: 'sync_res', payload: { time: v.currentTime, paused: v.paused } })
+      ch.send({
+        type: 'broadcast',
+        event: 'sync_res',
+        payload: { time: v.currentTime, paused: v.paused, movieUrl: movieUrlRef.current },
+      })
     })
 
     ch.on('broadcast', { event: 'sync_res' }, ({ payload }) => {
+      // Grab movie URL from whoever has it
+      if (payload.movieUrl && !movieUrlRef.current) {
+        movieUrlRef.current = payload.movieUrl
+        setMovieUrl(payload.movieUrl)
+      }
       if (didSync.current) return
       didSync.current = true
       const v = videoRef.current
@@ -120,7 +135,7 @@ export default function RoomPage() {
       if (egg) setEasterEgg(egg)
     })
 
-    // Typing indicator
+    // Typing
     ch.on('broadcast', { event: 'typing' }, ({ payload }) => {
       setTypingUsers(prev =>
         payload.typing
@@ -134,17 +149,43 @@ export default function RoomPage() {
       applyReaction(payload.messageId, payload.emoji, payload.username)
     })
 
-    // Presence
-    ch.on('presence', { event: 'sync' }, () => setOnline(Object.keys(ch.presenceState()).length))
+    // Presence — try to pick up movieUrl from others already in the room
+    ch.on('presence', { event: 'sync' }, () => {
+      setOnline(Object.keys(ch.presenceState()).length)
+      if (!movieUrlRef.current) {
+        for (const users of Object.values(ch.presenceState())) {
+          for (const u of users as Array<{ movieUrl?: string }>) {
+            if (u.movieUrl) {
+              movieUrlRef.current = u.movieUrl
+              setMovieUrl(u.movieUrl)
+              break
+            }
+          }
+        }
+      }
+    })
     ch.on('presence', { event: 'join' }, () => setOnline(Object.keys(ch.presenceState()).length))
     ch.on('presence', { event: 'leave' }, () => setOnline(Object.keys(ch.presenceState()).length))
 
     ch.subscribe(async (status) => {
       if (status !== 'SUBSCRIBED') return
       setConnected(true)
-      await ch.track({ username, at: Date.now() })
+
+      const trackPayload: Record<string, unknown> = { username, at: Date.now() }
+      if (movieUrlRef.current) trackPayload.movieUrl = movieUrlRef.current
+      await ch.track(trackPayload)
+
       ch.send({ type: 'broadcast', event: 'sync_req', payload: {} })
       setTimeout(() => { didSync.current = true }, 2000)
+
+      // Room not found: after 3s, if still no movieUrl and no other users → dead room
+      setTimeout(() => {
+        if (movieUrlRef.current) return
+        const others = Object.values(ch.presenceState())
+          .flat()
+          .filter((u: unknown) => (u as { username?: string }).username !== username)
+        if (others.length === 0) setRoomNotFound(true)
+      }, 3000)
     })
 
     return () => { supabase.removeChannel(ch) }
@@ -225,6 +266,40 @@ export default function RoomPage() {
     setUsername(t)
   }
 
+  // ── Room not found ─────────────────────────────────────────────────────────
+  if (roomNotFound) {
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center bg-[#080808] px-4">
+        <div className="flex flex-col items-center gap-8 w-full max-w-[360px] text-center">
+          <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-white/[0.06] border border-white/[0.08]">
+            <FilmSlate size={22} weight="fill" className="text-zinc-600" />
+          </div>
+          <div>
+            <p className="text-white font-semibold text-lg">Комната не найдена</p>
+            <p className="text-zinc-600 text-sm mt-1.5 leading-relaxed">
+              Комнаты <span className="font-mono text-zinc-400">{roomId}</span> не существует<br />или создатель уже вышел
+            </p>
+          </div>
+          <div className="flex flex-col gap-2 w-full">
+            <button
+              onClick={() => router.push('/create')}
+              className="w-full rounded-xl bg-white py-3 text-sm font-semibold text-black hover:opacity-90 transition-opacity cursor-pointer"
+            >
+              Создать новую комнату
+            </button>
+            <button
+              onClick={() => router.push('/')}
+              className="flex items-center justify-center gap-1.5 w-full rounded-xl border border-white/[0.08] py-3 text-sm text-zinc-500 hover:text-white transition-colors cursor-pointer"
+            >
+              <ArrowLeft size={13} />
+              На главную
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   // ── Name gate ─────────────────────────────────────────────────────────────
   if (!username) {
     return (
@@ -237,7 +312,9 @@ export default function RoomPage() {
           <div className="w-full rounded-2xl border border-white/[0.07] bg-[#111] p-6 flex flex-col gap-4">
             <div>
               <p className="text-white font-medium">Как тебя зовут?</p>
-              <p className="text-zinc-600 text-sm mt-0.5">Тебя пригласили в комнату <span className="text-zinc-400 font-mono">{roomId}</span></p>
+              <p className="text-zinc-600 text-sm mt-0.5">
+                Тебя пригласили в комнату <span className="text-zinc-400 font-mono">{roomId}</span>
+              </p>
             </div>
             <input
               autoFocus
@@ -279,7 +356,9 @@ export default function RoomPage() {
             <span className="text-zinc-600 text-xs tabular-nums">{online}</span>
           </div>
           <button onClick={copyInvite} className="flex items-center gap-1.5 text-zinc-500 hover:text-white text-xs transition-colors cursor-pointer select-none">
-            {copied ? <><Check size={13} className="text-emerald-400" /><span className="text-emerald-400">Скопировано</span></> : <><CopySimple size={13} /><span>Пригласить</span></>}
+            {copied
+              ? <><Check size={13} className="text-emerald-400" /><span className="text-emerald-400">Скопировано</span></>
+              : <><CopySimple size={13} /><span>Пригласить</span></>}
           </button>
         </div>
       </header>
@@ -289,15 +368,22 @@ export default function RoomPage() {
 
         {/* Video */}
         <div className="flex flex-1 items-center justify-center bg-black">
-          <video
-            ref={videoRef}
-            src={MOVIE_URL}
-            controls
-            className="h-full w-full object-contain"
-            onPlay={() => broadcastVideo('play')}
-            onPause={() => broadcastVideo('pause')}
-            onSeeked={() => broadcastVideo('seek')}
-          />
+          {movieUrl ? (
+            <video
+              ref={videoRef}
+              src={movieUrl}
+              controls
+              className="h-full w-full object-contain"
+              onPlay={() => broadcastVideo('play')}
+              onPause={() => broadcastVideo('pause')}
+              onSeeked={() => broadcastVideo('seek')}
+            />
+          ) : (
+            <div className="flex flex-col items-center gap-3 text-zinc-700">
+              <div className="h-5 w-5 rounded-full border-2 border-zinc-700 border-t-zinc-400 animate-spin" />
+              <span className="text-xs">Подключаемся...</span>
+            </div>
+          )}
         </div>
 
         {/* Chat */}
@@ -319,16 +405,14 @@ export default function RoomPage() {
               const isMe = msg.user === username
               const reactions = reactionMap[msg.id] || {}
               const hasReactions = Object.keys(reactions).length > 0
-              const isHovered = hoveredMsg === msg.id
 
               return (
                 <div
                   key={msg.id}
                   className="relative group flex flex-col gap-0.5"
                   onMouseEnter={() => setHoveredMsg(msg.id)}
-                  onMouseLeave={() => { setHoveredMsg(null) }}
+                  onMouseLeave={() => setHoveredMsg(null)}
                 >
-                  {/* Name + time */}
                   <div className="flex items-baseline gap-1.5">
                     <span className={`text-[11px] font-semibold ${isMe ? 'text-white' : 'text-zinc-400'}`}>
                       {isMe ? 'Ты' : msg.user}
@@ -336,11 +420,9 @@ export default function RoomPage() {
                     <span className="text-zinc-700 text-[10px]">{msg.time}</span>
                   </div>
 
-                  {/* Text */}
                   <p className="text-zinc-300 text-sm leading-relaxed break-words pr-5">{msg.text}</p>
 
-                  {/* Reaction add button — absolute top-right, shows on hover */}
-                  {(isHovered || reactionPickerFor === msg.id) && (
+                  {(hoveredMsg === msg.id || reactionPickerFor === msg.id) && (
                     <button
                       onClick={e => { e.stopPropagation(); setReactionPickerFor(reactionPickerFor === msg.id ? null : msg.id) }}
                       className="absolute top-0 right-0 flex h-5 w-5 items-center justify-center rounded-md text-zinc-600 hover:text-white hover:bg-white/[0.08] transition-colors cursor-pointer text-xs"
@@ -349,7 +431,6 @@ export default function RoomPage() {
                     </button>
                   )}
 
-                  {/* Reaction picker — anchored to left of message, no overflow */}
                   {reactionPickerFor === msg.id && (
                     <ReactionPicker
                       onSelect={emoji => handleReaction(msg.id, emoji)}
@@ -357,7 +438,6 @@ export default function RoomPage() {
                     />
                   )}
 
-                  {/* Reaction pills */}
                   {hasReactions && (
                     <div className="flex flex-wrap gap-1 mt-1">
                       {Object.entries(reactions).map(([emoji, users]) => {
